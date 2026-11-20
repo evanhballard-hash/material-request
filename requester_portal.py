@@ -187,10 +187,10 @@ if page == "Email settings":
 
 elif page == "Submit New Request":
     st.markdown('<div class="main-header">Submit Material Request</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info-box">Fill out the form below. A copy is emailed to purchasing when Email settings are filled in.</div>',
-        unsafe_allow_html=True,
-    )
+    st.caption("Build 2026-11-20-3")
+    status_box = st.empty()
+    if st.session_state.get("last_result"):
+        status_box.success(st.session_state.last_result)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -206,15 +206,25 @@ elif page == "Submit New Request":
         notes = st.text_area("Special Instructions / Notes")
 
     st.subheader("Line Items")
-    items_df = st.data_editor(
-        pd.DataFrame({"Qty": [1.0], "UOM": ["Each"], "Description": [""], "Code / SKU": [""], "Notes": [""]}),
-        column_config={
-            "UOM": st.column_config.SelectboxColumn("UOM", options=UNITS, required=True),
-        },
-        num_rows="dynamic",
-        use_container_width=True,
-        key="items_editor",
-    )
+    if "item_rows" not in st.session_state:
+        st.session_state.item_rows = 1
+    c_add, c_rem, _ = st.columns([1, 1, 4])
+    if c_add.button("Add a line"):
+        st.session_state.item_rows += 1
+        st.rerun()
+    if c_rem.button("Remove last line") and st.session_state.item_rows > 1:
+        st.session_state.item_rows -= 1
+        st.rerun()
+
+    line_items = []
+    for i in range(st.session_state.item_rows):
+        a, b, c, d, e = st.columns([1, 1, 3, 2, 2])
+        qty = a.number_input("Qty", min_value=0.0, value=1.0, key=f"qty_{i}")
+        uom = b.selectbox("UOM", UNITS, key=f"uom_{i}")
+        desc = c.text_input("Description", key=f"desc_{i}")
+        code = d.text_input("Code / SKU", key=f"code_{i}")
+        note = e.text_input("Notes", key=f"note_{i}")
+        line_items.append((qty, uom, desc, code, note))
 
     st.subheader("Attach Documents")
     st.caption("Common: Vendor quotes, specs, drawings, photos of existing materials, SDS, etc.")
@@ -223,7 +233,6 @@ elif page == "Submit New Request":
         accept_multiple_files=True,
         type=["pdf", "png", "jpg", "jpeg", "doc", "docx", "xls", "xlsx"],
     )
-
     doc_types = []
     if uploaded_files:
         for f in uploaded_files:
@@ -236,7 +245,9 @@ elif page == "Submit New Request":
 
     if st.button("Submit Request", type="primary"):
         if not (project_name and requested_by and requester_email):
-            st.error("Project Name, Requested By, and Email are required.")
+            msg = "Project Name, Requested By, and Email are required."
+            st.session_state.last_result = msg
+            status_box.error(msg)
         else:
             try:
                 req_no = generate_requisition_no()
@@ -249,31 +260,20 @@ elif page == "Submit New Request":
                      requested_by, requester_email, date_ordered, date_required, notes, created_at, updated_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        req_no,
-                        project_name,
-                        project_number,
-                        delivery_address,
-                        segment,
-                        requested_by,
-                        requester_email,
-                        str(date_ordered),
-                        str(date_required),
-                        notes,
-                        now,
-                        now,
+                        req_no, project_name, project_number, delivery_address, segment,
+                        requested_by, requester_email, str(date_ordered), str(date_required),
+                        notes, now, now,
                     ),
                 )
                 rid = c.lastrowid
                 lines = []
-                for _, row in items_df.iterrows():
-                    if row.get("Description"):
+                for qty, uom, desc, code, note in line_items:
+                    if str(desc or "").strip():
                         c.execute(
                             "INSERT INTO items (request_id, qty, uom, description, code, notes) VALUES (?,?,?,?,?,?)",
-                            (rid, row["Qty"], row.get("UOM") or "Each", row["Description"], row["Code / SKU"], row["Notes"]),
+                            (rid, qty, uom, desc, code, note),
                         )
-                        lines.append(
-                            f"- {row['Qty']} {row.get('UOM') or 'Each'} {row['Description']} ({row['Code / SKU'] or 'no code'})"
-                        )
+                        lines.append(f"- {qty} {uom} {desc} ({code or 'no code'})")
                 if uploaded_files:
                     for i, f in enumerate(uploaded_files):
                         fid = str(uuid.uuid4())
@@ -302,18 +302,22 @@ elif page == "Submit New Request":
                     f"Delivery: {delivery_address or '-'}\n"
                     f"Date required: {date_required}\n"
                     f"Notes: {notes or '-'}\n\n"
-                    f"Items:\n"
-                    + ("\n".join(lines) if lines else "- None listed")
+                    f"Items:\n" + ("\n".join(lines) if lines else "- None listed")
                 )
                 purchase_to = st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL
                 sent, err = send_notification(purchase_to, subject, body, st.session_state.smtp)
-                st.success(f"Request {req_no} submitted. You can track it under My Requests.")
+                msg = f"Request {req_no} submitted."
                 if sent:
-                    st.success(f"Email sent to {purchase_to}.")
+                    msg += f" Email sent to {purchase_to}."
                 else:
-                    st.warning(f"Purchase email was not sent. {err} Open Email settings on the left.")
+                    msg += f" Purchase email was not sent: {err}"
+                st.session_state.last_result = msg
+                status_box.success(msg)
+                st.session_state.item_rows = 1
             except Exception as e:
-                st.error(f"Could not save the request: {e}")
+                msg = f"Could not save the request: {e}"
+                st.session_state.last_result = msg
+                status_box.error(msg)
 
 elif page == "My Requests":
     st.markdown('<div class="main-header">My Material Requests</div>', unsafe_allow_html=True)
