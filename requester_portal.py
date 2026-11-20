@@ -157,6 +157,7 @@ if "smtp" not in st.session_state:
     }
 
 st.sidebar.title("Requester Portal")
+st.sidebar.success("Build 2026-11-20-4")
 st.sidebar.info("Submit a request. Purchasing gets an email when you submit.")
 page = st.sidebar.radio("Menu", ["Submit New Request", "My Requests", "Email settings"])
 
@@ -187,7 +188,7 @@ if page == "Email settings":
 
 elif page == "Submit New Request":
     st.markdown('<div class="main-header">Submit Material Request</div>', unsafe_allow_html=True)
-    st.caption("Build 2026-11-20-3")
+    st.error("BUILD 2026-11-20-4  \u2014  if you do not see this red bar, the app is still on the old code. Reboot it.")
     status_box = st.empty()
     if st.session_state.get("last_result"):
         status_box.success(st.session_state.last_result)
