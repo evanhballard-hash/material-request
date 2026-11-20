@@ -2,6 +2,7 @@ import os
 import sqlite3
 import uuid
 import smtplib
+import ssl
 from datetime import datetime, date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -106,28 +107,42 @@ def generate_requisition_no():
 
 
 def send_notification(to_email, subject, body, smtp):
-    if not to_email or not smtp.get("user") or not smtp.get("password"):
+    user = (smtp.get("user") or "").strip()
+    password = (smtp.get("password") or "").replace(" ", "")
+    host = (smtp.get("server") or "smtp.gmail.com").strip()
+    if not to_email or not user or not password:
         return False, "From email and app password are blank."
+    msg = MIMEMultipart()
+    msg["From"] = user
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+    context = ssl.create_default_context()
+    errors = []
     try:
-        msg = MIMEMultipart()
-        msg["From"] = smtp["user"]
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-        server = smtplib.SMTP(smtp.get("server", "smtp.gmail.com"), int(smtp.get("port", 587)))
-        server.starttls()
-        server.login(smtp["user"], smtp["password"])
-        server.send_message(msg)
-        server.quit()
+        with smtplib.SMTP_SSL(host, 465, context=context, timeout=20) as server:
+            server.login(user, password)
+            server.send_message(msg)
         return True, ""
     except Exception as e:
-        return False, str(e)
+        errors.append(f"465: {e}")
+    try:
+        with smtplib.SMTP(host, 587, timeout=20) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(user, password)
+            server.send_message(msg)
+        return True, ""
+    except Exception as e:
+        errors.append(f"587: {e}")
+    return False, " | ".join(errors)
 
 
 if "smtp" not in st.session_state:
     st.session_state.smtp = {
         "server": "smtp.gmail.com",
-        "port": 587,
+        "port": 465,
         "user": "",
         "password": "",
         "purchase_email": PURCHASE_EMAIL,
@@ -149,8 +164,18 @@ if page == "Email settings":
     st.session_state.smtp["purchase_email"] = st.text_input(
         "Purchase email", st.session_state.smtp.get("purchase_email", PURCHASE_EMAIL)
     )
-    st.info("Make a Gmail app password at myaccount.google.com/apppasswords. Do not use your normal password.")
-    st.success("Saved for this session. Re-enter these if the app restarts.")
+    st.info("Use a Gmail app password from myaccount.google.com/apppasswords. Spaces in the password are fine.")
+    if st.button("Send a test email"):
+        ok, err = send_notification(
+            st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL,
+            "Material request test",
+            "This is a test from the material request app.",
+            st.session_state.smtp,
+        )
+        if ok:
+            st.success("Test email sent.")
+        else:
+            st.error(err)
 
 elif page == "Submit New Request":
     st.markdown('<div class="main-header">Submit Material Request</div>', unsafe_allow_html=True)
