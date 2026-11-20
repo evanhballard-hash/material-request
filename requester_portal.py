@@ -30,6 +30,7 @@ DB_PATH = "material_requests.db"
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 PURCHASE_EMAIL = "Sarah.sharearm@thecomfortgroup.com"
+UNITS = ["Each", "ft", "sf", "rolls", "box", "bag", "lb", "gal", "sheet", "other"]
 
 
 def init_db():
@@ -58,12 +59,17 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         request_id INTEGER,
         qty REAL,
+        uom TEXT,
         description TEXT,
         code TEXT,
         notes TEXT,
         FOREIGN KEY (request_id) REFERENCES requests(id)
     )"""
     )
+    try:
+        c.execute("ALTER TABLE items ADD COLUMN uom TEXT")
+    except sqlite3.OperationalError:
+        pass
     c.execute(
         """CREATE TABLE IF NOT EXISTS documents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -202,7 +208,10 @@ elif page == "Submit New Request":
 
         st.subheader("Line Items")
         items_df = st.data_editor(
-            pd.DataFrame({"Qty": [1.0], "Description": [""], "Code / SKU": [""], "Notes": [""]}),
+            pd.DataFrame({"Qty": [1.0], "UOM": ["Each"], "Description": [""], "Code / SKU": [""], "Notes": [""]}),
+            column_config={
+                "UOM": st.column_config.SelectboxColumn("UOM", options=UNITS, required=True),
+            },
             num_rows="dynamic",
             use_container_width=True,
         )
@@ -258,11 +267,11 @@ elif page == "Submit New Request":
                 for _, row in items_df.iterrows():
                     if row.get("Description"):
                         c.execute(
-                            "INSERT INTO items (request_id, qty, description, code, notes) VALUES (?,?,?,?,?)",
-                            (rid, row["Qty"], row["Description"], row["Code / SKU"], row["Notes"]),
+                            "INSERT INTO items (request_id, qty, uom, description, code, notes) VALUES (?,?,?,?,?,?)",
+                            (rid, row["Qty"], row.get("UOM") or "Each", row["Description"], row["Code / SKU"], row["Notes"]),
                         )
                         lines.append(
-                            f"- {row['Qty']} x {row['Description']} ({row['Code / SKU'] or 'no code'})"
+                            f"- {row['Qty']} {row.get('UOM') or 'Each'} {row['Description']} ({row['Code / SKU'] or 'no code'})"
                         )
                 if uploaded_files:
                     for i, f in enumerate(uploaded_files):
@@ -325,7 +334,7 @@ elif page == "My Requests":
                     "SELECT * FROM requests WHERE requisition_no = ?", conn, params=(selected,)
                 ).iloc[0]
                 items = pd.read_sql_query(
-                    "SELECT qty, description, code, notes FROM items WHERE request_id = ?",
+                    "SELECT qty, uom, description, code, notes FROM items WHERE request_id = ?",
                     conn,
                     params=(req["id"],),
                 )
