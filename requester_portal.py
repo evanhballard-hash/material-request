@@ -192,52 +192,53 @@ elif page == "Submit New Request":
         unsafe_allow_html=True,
     )
 
-    with st.form("request_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            project_name = st.text_input("Project Name *")
-            project_number = st.text_input("Project Number")
-            segment = st.text_input("Segment / Trade")
-            requested_by = st.text_input("Requested By *")
-            requester_email = st.text_input("Your Email *")
-        with col2:
-            delivery_address = st.text_area("Delivery Address")
-            date_ordered = st.date_input("Date Ordered", value=date.today())
-            date_required = st.date_input("Date Required")
-            notes = st.text_area("Special Instructions / Notes")
+    col1, col2 = st.columns(2)
+    with col1:
+        project_name = st.text_input("Project Name *")
+        project_number = st.text_input("Project Number")
+        segment = st.text_input("Segment / Trade")
+        requested_by = st.text_input("Requested By *")
+        requester_email = st.text_input("Your Email *")
+    with col2:
+        delivery_address = st.text_area("Delivery Address")
+        date_ordered = st.date_input("Date Ordered", value=date.today())
+        date_required = st.date_input("Date Required")
+        notes = st.text_area("Special Instructions / Notes")
 
-        st.subheader("Line Items")
-        items_df = st.data_editor(
-            pd.DataFrame({"Qty": [1.0], "UOM": ["Each"], "Description": [""], "Code / SKU": [""], "Notes": [""]}),
-            column_config={
-                "UOM": st.column_config.SelectboxColumn("UOM", options=UNITS, required=True),
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-        )
+    st.subheader("Line Items")
+    items_df = st.data_editor(
+        pd.DataFrame({"Qty": [1.0], "UOM": ["Each"], "Description": [""], "Code / SKU": [""], "Notes": [""]}),
+        column_config={
+            "UOM": st.column_config.SelectboxColumn("UOM", options=UNITS, required=True),
+        },
+        num_rows="dynamic",
+        use_container_width=True,
+        key="items_editor",
+    )
 
-        st.subheader("Attach Documents")
-        st.caption("Common: Vendor quotes, specs, drawings, photos of existing materials, SDS, etc.")
-        uploaded_files = st.file_uploader(
-            "Upload files",
-            accept_multiple_files=True,
-            type=["pdf", "png", "jpg", "jpeg", "doc", "docx", "xls", "xlsx"],
-        )
+    st.subheader("Attach Documents")
+    st.caption("Common: Vendor quotes, specs, drawings, photos of existing materials, SDS, etc.")
+    uploaded_files = st.file_uploader(
+        "Upload files",
+        accept_multiple_files=True,
+        type=["pdf", "png", "jpg", "jpeg", "doc", "docx", "xls", "xlsx"],
+    )
 
-        doc_types = []
-        if uploaded_files:
-            for f in uploaded_files:
-                dtype = st.selectbox(
-                    f"Document type for {f.name}",
-                    ["Vendor Quote", "Drawing/Spec", "Photo", "SDS", "Other"],
-                    key=f.name,
-                )
-                doc_types.append(dtype)
+    doc_types = []
+    if uploaded_files:
+        for f in uploaded_files:
+            dtype = st.selectbox(
+                f"Document type for {f.name}",
+                ["Vendor Quote", "Drawing/Spec", "Photo", "SDS", "Other"],
+                key=f.name,
+            )
+            doc_types.append(dtype)
 
-        if st.form_submit_button("Submit Request", type="primary"):
-            if not (project_name and requested_by and requester_email):
-                st.error("Project Name, Requested By, and Email are required.")
-            else:
+    if st.button("Submit Request", type="primary"):
+        if not (project_name and requested_by and requester_email):
+            st.error("Project Name, Requested By, and Email are required.")
+        else:
+            try:
                 req_no = generate_requisition_no()
                 now = datetime.now().isoformat()
                 conn = get_conn()
@@ -311,6 +312,8 @@ elif page == "Submit New Request":
                     st.success(f"Email sent to {purchase_to}.")
                 else:
                     st.warning(f"Purchase email was not sent. {err} Open Email settings on the left.")
+            except Exception as e:
+                st.error(f"Could not save the request: {e}")
 
 elif page == "My Requests":
     st.markdown('<div class="main-header">My Material Requests</div>', unsafe_allow_html=True)
