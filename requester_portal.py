@@ -109,9 +109,9 @@ def generate_requisition_no():
 def send_notification(to_email, subject, body, smtp):
     user = (smtp.get("user") or "").strip()
     password = (smtp.get("password") or "").replace(" ", "")
-    host = (smtp.get("server") or "smtp.gmail.com").strip()
+    host = (smtp.get("server") or "smtp.office365.com").strip()
     if not to_email or not user or not password:
-        return False, "From email and app password are blank."
+        return False, "From email and password are blank."
     msg = MIMEMultipart()
     msg["From"] = user
     msg["To"] = to_email
@@ -119,30 +119,32 @@ def send_notification(to_email, subject, body, smtp):
     msg.attach(MIMEText(body, "plain"))
     context = ssl.create_default_context()
     errors = []
-    try:
-        with smtplib.SMTP_SSL(host, 465, context=context, timeout=20) as server:
-            server.login(user, password)
-            server.send_message(msg)
-        return True, ""
-    except Exception as e:
-        errors.append(f"465: {e}")
-    try:
-        with smtplib.SMTP(host, 587, timeout=20) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(user, password)
-            server.send_message(msg)
-        return True, ""
-    except Exception as e:
-        errors.append(f"587: {e}")
+    attempts = [(587, "starttls"), (465, "ssl")]
+    if "gmail" in host:
+        attempts = [(465, "ssl"), (587, "starttls")]
+    for port, mode in attempts:
+        try:
+            if mode == "ssl":
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
+                    server.login(user, password)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=20) as server:
+                    server.ehlo()
+                    server.starttls(context=context)
+                    server.ehlo()
+                    server.login(user, password)
+                    server.send_message(msg)
+            return True, ""
+        except Exception as e:
+            errors.append(f"{port}: {e}")
     return False, " | ".join(errors)
 
 
 if "smtp" not in st.session_state:
     st.session_state.smtp = {
-        "server": "smtp.gmail.com",
-        "port": 465,
+        "server": "smtp.office365.com",
+        "port": 587,
         "user": "",
         "password": "",
         "purchase_email": PURCHASE_EMAIL,
@@ -157,14 +159,14 @@ if page == "Email settings":
     st.caption("This is the mailbox that sends the notice. Sarah's address is who receives it.")
     st.session_state.smtp["server"] = st.text_input("SMTP server", st.session_state.smtp["server"])
     st.session_state.smtp["port"] = st.number_input("Port", value=int(st.session_state.smtp["port"]))
-    st.session_state.smtp["user"] = st.text_input("From email (a Gmail you control)", st.session_state.smtp["user"])
+    st.session_state.smtp["user"] = st.text_input("From email (your Comfort Group email)", st.session_state.smtp["user"])
     st.session_state.smtp["password"] = st.text_input(
-        "Gmail app password", type="password", value=st.session_state.smtp["password"]
+        "Mailbox password", type="password", value=st.session_state.smtp["password"]
     )
     st.session_state.smtp["purchase_email"] = st.text_input(
         "Purchase email", st.session_state.smtp.get("purchase_email", PURCHASE_EMAIL)
     )
-    st.info("Use a Gmail app password from myaccount.google.com/apppasswords. Spaces in the password are fine.")
+    st.info("Comfort Group uses Outlook. Server must be smtp.office365.com, port 587. Use your normal work password, or an app password if IT requires one.")
     if st.button("Send a test email"):
         ok, err = send_notification(
             st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL,
