@@ -148,11 +148,11 @@ def send_notification(to_email, subject, body, smtp):
     for port, mode in attempts:
         try:
             if mode == "ssl":
-                with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=8) as server:
                     server.login(user, password)
                     server.send_message(msg)
             else:
-                with smtplib.SMTP(host, port, timeout=20) as server:
+                with smtplib.SMTP(host, port, timeout=8) as server:
                     server.ehlo()
                     server.starttls(context=context)
                     server.ehlo()
@@ -196,7 +196,7 @@ if "smtp" not in st.session_state:
     }
 
 st.sidebar.title("Material requests")
-st.sidebar.success("Build 2026-11-23-1")
+st.sidebar.success("Build 2026-11-23-2")
 page = st.sidebar.radio(
     "Menu",
     ["Request supplies", "Track orders", "Projects", "Email settings"],
@@ -254,7 +254,7 @@ elif page == "Email settings":
 
 elif page == "Request supplies":
     st.header("Request supplies")
-    st.error("BUILD 2026-11-23-1")
+    st.error("BUILD 2026-11-23-2")
     status_box = st.empty()
     if st.session_state.get("last_result"):
         status_box.success(st.session_state.last_result)
@@ -309,7 +309,8 @@ elif page == "Request supplies":
         type=["pdf", "png", "jpg", "jpeg", "doc", "docx", "xls", "xlsx"],
     )
 
-    if st.button("Submit request", type="primary"):
+    if st.button("Submit request", type="primary", key="submit_request"):
+        status_box.info("Saving...")
         if not (requested_by and requester_email):
             msg = "Requested by and email are required."
             st.session_state.last_result = msg
