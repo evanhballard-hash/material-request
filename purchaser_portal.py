@@ -90,11 +90,52 @@ def init_db():
             changed_at TEXT
         )"""
     )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )"""
+    )
     conn.commit()
     conn.close()
 
 
 init_db()
+
+
+def get_setting(key, default=""):
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row[0] if row else default
+
+
+def set_setting(key, value):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value or ""),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_smtp():
+    return {
+        "server": get_setting("smtp_server", "smtp.gmail.com"),
+        "port": int(get_setting("smtp_port", "465") or 465),
+        "user": get_setting("smtp_user", ""),
+        "password": get_setting("smtp_password", ""),
+        "purchase_email": get_setting("purchase_email", PURCHASE_EMAIL),
+    }
+
+
+def save_smtp(smtp):
+    set_setting("smtp_server", smtp.get("server", ""))
+    set_setting("smtp_port", str(smtp.get("port", 465)))
+    set_setting("smtp_user", smtp.get("user", ""))
+    set_setting("smtp_password", smtp.get("password", ""))
+    set_setting("purchase_email", smtp.get("purchase_email", ""))
 
 
 def load_projects():
@@ -187,16 +228,14 @@ def load_requests():
 
 
 if "smtp" not in st.session_state:
-    st.session_state.smtp = {
-        "server": "smtp.gmail.com",
-        "port": 465,
-        "user": "",
-        "password": "",
-        "purchase_email": PURCHASE_EMAIL,
-    }
+    st.session_state.smtp = load_smtp()
+else:
+    saved = load_smtp()
+    if not st.session_state.smtp.get("user") and saved.get("user"):
+        st.session_state.smtp = saved
 
 st.sidebar.title("Material requests")
-st.sidebar.success("Build 2026-11-23-2")
+st.sidebar.success("Build 2026-11-23-3")
 page = st.sidebar.radio(
     "Menu",
     ["Request supplies", "Track orders", "Projects", "Email settings"],
@@ -229,20 +268,38 @@ if page == "Projects":
 
 elif page == "Email settings":
     st.header("Email notifications")
-    st.caption("Use the Gmail that already worked, and a Gmail app password.")
-    st.session_state.smtp["server"] = st.text_input("SMTP server", st.session_state.smtp["server"])
-    st.session_state.smtp["port"] = st.number_input("Port", value=int(st.session_state.smtp["port"]))
-    st.session_state.smtp["user"] = st.text_input("From email", st.session_state.smtp["user"])
-    st.session_state.smtp["password"] = st.text_input(
-        "App password", type="password", value=st.session_state.smtp["password"]
+    st.caption("Use the Gmail that already worked, and a Gmail app password. Click Save.")
+    server = st.text_input("SMTP server", st.session_state.smtp.get("server", "smtp.gmail.com"))
+    port = st.number_input("Port", value=int(st.session_state.smtp.get("port", 465)))
+    user = st.text_input("From email", st.session_state.smtp.get("user", ""))
+    password = st.text_input(
+        "App password", type="password", value=st.session_state.smtp.get("password", "")
     )
-    st.session_state.smtp["purchase_email"] = st.text_input(
+    purchase_email = st.text_input(
         "Purchase email (receives new requests)",
         st.session_state.smtp.get("purchase_email", PURCHASE_EMAIL),
     )
+    if st.button("Save email settings"):
+        st.session_state.smtp = {
+            "server": server,
+            "port": int(port),
+            "user": user,
+            "password": password,
+            "purchase_email": purchase_email,
+        }
+        save_smtp(st.session_state.smtp)
+        st.success("Saved. These stay filled in for the next request.")
     if st.button("Send a test email"):
+        st.session_state.smtp = {
+            "server": server,
+            "port": int(port),
+            "user": user,
+            "password": password,
+            "purchase_email": purchase_email,
+        }
+        save_smtp(st.session_state.smtp)
         ok, err = send_notification(
-            st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL,
+            purchase_email or PURCHASE_EMAIL,
             "Material request test",
             "This is a test from the material request app.",
             st.session_state.smtp,
@@ -254,7 +311,7 @@ elif page == "Email settings":
 
 elif page == "Request supplies":
     st.header("Request supplies")
-    st.error("BUILD 2026-11-23-2")
+    st.error("BUILD 2026-11-23-3")
     status_box = st.empty()
     if st.session_state.get("last_result"):
         status_box.success(st.session_state.last_result)
@@ -273,11 +330,11 @@ elif page == "Request supplies":
             project_name = picked
             project_number = project_map.get(picked, "")
             st.text_input("Project number", value=project_number, disabled=True)
-        segment = st.text_input("Segment / trade")
-        requested_by = st.text_input("Requested by *")
-        requester_email = st.text_input("Your email *")
+        segment = st.text_input("Segment / trade", value=get_setting("last_segment", ""))
+        requested_by = st.text_input("Requested by *", value=get_setting("last_requested_by", ""))
+        requester_email = st.text_input("Your email *", value=get_setting("last_requester_email", ""))
     with col2:
-        delivery_address = st.text_area("Delivery address")
+        delivery_address = st.text_area("Delivery address", value=get_setting("last_delivery", ""))
         date_ordered = st.date_input("Date ordered", value=date.today())
         date_required = st.date_input("Date required")
         notes = st.text_area("Notes")
@@ -376,6 +433,10 @@ elif page == "Request supplies":
                 )
                 purchase_to = st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL
                 sent, err = send_notification(purchase_to, subject, body, st.session_state.smtp)
+                set_setting("last_requested_by", requested_by)
+                set_setting("last_requester_email", requester_email)
+                set_setting("last_segment", segment)
+                set_setting("last_delivery", delivery_address)
                 msg = f"Request {req_no} submitted."
                 if sent:
                     msg += f" Email sent to {purchase_to}."
