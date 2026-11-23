@@ -1,10 +1,11 @@
 import os
 import sqlite3
 import uuid
+import smtplib
+import ssl
 from datetime import date, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import smtplib
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +16,7 @@ DB_PATH = "material_requests.db"
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 PURCHASE_EMAIL = "Sarah.sharearm@thecomfortgroup.com"
-
+UNITS = ["Each", "ft", "sf", "rolls", "box", "bag", "lb", "gal", "sheet", "other"]
 STATUSES = [
     "Submitted", "Under Review", "Approved", "Ordered",
     "Partially Shipped", "Shipped", "Received", "Closed", "Rejected",
@@ -59,11 +60,16 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             request_id INTEGER,
             qty REAL,
+            uom TEXT,
             description TEXT,
             code TEXT,
             notes TEXT
         )"""
     )
+    try:
+        c.execute("ALTER TABLE items ADD COLUMN uom TEXT")
+    except sqlite3.OperationalError:
+        pass
     c.execute(
         """CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,23 +130,38 @@ def generate_requisition_no():
 
 
 def send_notification(to_email, subject, body, smtp):
-    if not to_email or not smtp.get("user") or not smtp.get("password"):
-        return False
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = smtp["user"]
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-        server = smtplib.SMTP(smtp.get("server", "smtp.gmail.com"), int(smtp.get("port", 587)))
-        server.starttls()
-        server.login(smtp["user"], smtp["password"])
-        server.send_message(msg)
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Email failed: {e}")
-        return False
+    user = (smtp.get("user") or "").strip()
+    password = (smtp.get("password") or "").replace(" ", "")
+    host = (smtp.get("server") or "smtp.gmail.com").strip()
+    if not to_email or not user or not password:
+        return False, "From email and app password are blank."
+    msg = MIMEMultipart()
+    msg["From"] = user
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+    context = ssl.create_default_context()
+    errors = []
+    attempts = [(465, "ssl"), (587, "starttls")]
+    if "office365" in host or "outlook" in host:
+        attempts = [(587, "starttls"), (465, "ssl")]
+    for port, mode in attempts:
+        try:
+            if mode == "ssl":
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
+                    server.login(user, password)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=20) as server:
+                    server.ehlo()
+                    server.starttls(context=context)
+                    server.ehlo()
+                    server.login(user, password)
+                    server.send_message(msg)
+            return True, ""
+        except Exception as e:
+            errors.append(f"{port}: {e}")
+    return False, " | ".join(errors)
 
 
 def load_requests():
@@ -168,13 +189,14 @@ def load_requests():
 if "smtp" not in st.session_state:
     st.session_state.smtp = {
         "server": "smtp.gmail.com",
-        "port": 587,
+        "port": 465,
         "user": "",
         "password": "",
         "purchase_email": PURCHASE_EMAIL,
     }
 
 st.sidebar.title("Material requests")
+st.sidebar.success("Build 2026-11-23-1")
 page = st.sidebar.radio(
     "Menu",
     ["Request supplies", "Track orders", "Projects", "Email settings"],
@@ -182,7 +204,7 @@ page = st.sidebar.radio(
 
 if page == "Projects":
     st.header("Projects")
-    st.caption("Add each project once. The request form and the tracker both use this list.")
+    st.caption("Optional. Add a project once and it shows in the request dropdown.")
     with st.form("add_project"):
         c1, c2 = st.columns(2)
         with c1:
@@ -203,11 +225,11 @@ if page == "Projects":
             hide_index=True,
         )
     else:
-        st.info("No projects yet.")
+        st.info("No projects yet. You can still submit a request.")
 
 elif page == "Email settings":
     st.header("Email notifications")
-    st.caption("Enter the Gmail that sends the mail, and a Gmail app password.")
+    st.caption("Use the Gmail that already worked, and a Gmail app password.")
     st.session_state.smtp["server"] = st.text_input("SMTP server", st.session_state.smtp["server"])
     st.session_state.smtp["port"] = st.number_input("Port", value=int(st.session_state.smtp["port"]))
     st.session_state.smtp["user"] = st.text_input("From email", st.session_state.smtp["user"])
@@ -218,113 +240,152 @@ elif page == "Email settings":
         "Purchase email (receives new requests)",
         st.session_state.smtp.get("purchase_email", PURCHASE_EMAIL),
     )
-    st.success("Saved for this session.")
+    if st.button("Send a test email"):
+        ok, err = send_notification(
+            st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL,
+            "Material request test",
+            "This is a test from the material request app.",
+            st.session_state.smtp,
+        )
+        if ok:
+            st.success("Test email sent.")
+        else:
+            st.error(err)
 
 elif page == "Request supplies":
     st.header("Request supplies")
-    projects = load_projects()
-    project_names = [p[0] for p in projects]
-    project_map = {p[0]: p[1] for p in projects}
-    with st.form("request_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            if project_names:
-                project_name = st.selectbox("Project name *", project_names)
-                project_number = project_map.get(project_name, "")
-                st.text_input("Project number", value=project_number, disabled=True)
-            else:
-                st.warning("Add projects under Projects in the menu first.")
-                project_name = ""
-                project_number = ""
-            segment = st.text_input("Segment / trade")
-            requested_by = st.text_input("Requested by *")
-            requester_email = st.text_input("Your email *")
-        with col2:
-            delivery_address = st.text_area("Delivery address")
-            date_ordered = st.date_input("Date ordered", value=date.today())
-            date_required = st.date_input("Date required")
-            notes = st.text_area("Notes")
-        st.subheader("Line items")
-        items_df = st.data_editor(
-            pd.DataFrame({"Qty": [1.0], "Description": [""], "Code / SKU": [""], "Notes": [""]}),
-            num_rows="dynamic",
-            use_container_width=True,
-        )
-        uploaded_files = st.file_uploader(
-            "Attach a quote, spec, photo, or SDS",
-            accept_multiple_files=True,
-            type=["pdf", "png", "jpg", "jpeg", "doc", "docx", "xls", "xlsx"],
-        )
-        submitted = st.form_submit_button("Submit request", type="primary")
-    if submitted:
-        if not (project_name and requested_by and requester_email):
-            st.error("Project, requested by, and email are required.")
-        else:
-            req_no = generate_requisition_no()
-            now = datetime.now().isoformat()
-            conn = get_conn()
-            c = conn.cursor()
-            c.execute(
-                """INSERT INTO requests
-                   (requisition_no, project_name, project_number, delivery_address, segment,
-                    requested_by, requester_email, date_ordered, date_required, notes,
-                    created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    req_no, project_name, project_number, delivery_address, segment,
-                    requested_by, requester_email, str(date_ordered), str(date_required),
-                    notes, now, now,
-                ),
-            )
-            rid = c.lastrowid
-            lines = []
-            for _, row in items_df.iterrows():
-                if str(row.get("Description") or "").strip():
-                    c.execute(
-                        "INSERT INTO items (request_id, qty, description, code, notes) VALUES (?,?,?,?,?)",
-                        (rid, row["Qty"], row["Description"], row["Code / SKU"], row["Notes"]),
-                    )
-                    lines.append(
-                        f"- {row['Qty']} x {row['Description']} ({row['Code / SKU'] or 'no code'})"
-                    )
-            if uploaded_files:
-                for f in uploaded_files:
-                    fid = str(uuid.uuid4())
-                    fname = f"{fid}{os.path.splitext(f.name)[1]}"
-                    with open(os.path.join(UPLOAD_DIR, fname), "wb") as out:
-                        out.write(f.getbuffer())
-                    c.execute(
-                        "INSERT INTO documents (request_id, filename, original_name, doc_type, uploaded_at) VALUES (?,?,?,?,?)",
-                        (rid, fname, f.name, "Attachment", now),
-                    )
-            c.execute(
-                "INSERT INTO status_history (request_id, status, notes, changed_by, changed_at) VALUES (?,?,?,?,?)",
-                (rid, "Submitted", "New request", requested_by, now),
-            )
-            conn.commit()
-            conn.close()
+    st.error("BUILD 2026-11-23-1")
+    status_box = st.empty()
+    if st.session_state.get("last_result"):
+        status_box.success(st.session_state.last_result)
 
-            subject = f"New material request {req_no}"
-            body = (
-                f"A new material request was submitted.\n\n"
-                f"Requisition: {req_no}\n"
-                f"Project: {project_name}\n"
-                f"Project number: {project_number or '-'}\n"
-                f"Segment: {segment or '-'}\n"
-                f"Requested by: {requested_by} ({requester_email})\n"
-                f"Delivery: {delivery_address or '-'}\n"
-                f"Date required: {date_required}\n"
-                f"Notes: {notes or '-'}\n\n"
-                f"Items:\n"
-                + ("\n".join(lines) if lines else "- None listed")
-            )
-            purchase_to = st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL
-            sent = send_notification(purchase_to, subject, body, st.session_state.smtp)
-            if sent:
-                st.success(f"Request {req_no} submitted. Email sent to {purchase_to}.")
-            else:
-                st.success(f"Request {req_no} is on the order list.")
-                st.warning("Purchase email was not sent. Open Email settings and enter the from address and app password.")
+    projects = load_projects()
+    project_names = ["Type a project..."] + [p[0] for p in projects]
+    project_map = {p[0]: p[1] for p in projects}
+
+    col1, col2 = st.columns(2)
+    with col1:
+        picked = st.selectbox("Project", project_names)
+        if picked == "Type a project...":
+            project_name = st.text_input("Project name")
+            project_number = st.text_input("Project number")
+        else:
+            project_name = picked
+            project_number = project_map.get(picked, "")
+            st.text_input("Project number", value=project_number, disabled=True)
+        segment = st.text_input("Segment / trade")
+        requested_by = st.text_input("Requested by *")
+        requester_email = st.text_input("Your email *")
+    with col2:
+        delivery_address = st.text_area("Delivery address")
+        date_ordered = st.date_input("Date ordered", value=date.today())
+        date_required = st.date_input("Date required")
+        notes = st.text_area("Notes")
+
+    st.subheader("Line items")
+    if "item_rows" not in st.session_state:
+        st.session_state.item_rows = 1
+    c_add, c_rem, _ = st.columns([1, 1, 4])
+    if c_add.button("Add a line"):
+        st.session_state.item_rows += 1
+        st.rerun()
+    if c_rem.button("Remove last line") and st.session_state.item_rows > 1:
+        st.session_state.item_rows -= 1
+        st.rerun()
+
+    line_items = []
+    for i in range(st.session_state.item_rows):
+        a, b, c, d, e = st.columns([1, 1, 3, 2, 2])
+        qty = a.number_input("Qty", min_value=0.0, value=1.0, key=f"qty_{i}")
+        uom = b.selectbox("UOM", UNITS, key=f"uom_{i}")
+        desc = c.text_input("Description", key=f"desc_{i}")
+        code = d.text_input("Code / SKU", key=f"code_{i}")
+        note = e.text_input("Notes", key=f"note_{i}")
+        line_items.append((qty, uom, desc, code, note))
+
+    uploaded_files = st.file_uploader(
+        "Attach a quote, spec, photo, or SDS",
+        accept_multiple_files=True,
+        type=["pdf", "png", "jpg", "jpeg", "doc", "docx", "xls", "xlsx"],
+    )
+
+    if st.button("Submit request", type="primary"):
+        if not (requested_by and requester_email):
+            msg = "Requested by and email are required."
+            st.session_state.last_result = msg
+            status_box.error(msg)
+        else:
+            try:
+                if project_name and picked == "Type a project...":
+                    add_project(project_name, project_number)
+                req_no = generate_requisition_no()
+                now = datetime.now().isoformat()
+                conn = get_conn()
+                c = conn.cursor()
+                c.execute(
+                    """INSERT INTO requests
+                       (requisition_no, project_name, project_number, delivery_address, segment,
+                        requested_by, requester_email, date_ordered, date_required, notes,
+                        created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        req_no, project_name or "", project_number or "", delivery_address, segment,
+                        requested_by, requester_email, str(date_ordered), str(date_required),
+                        notes, now, now,
+                    ),
+                )
+                rid = c.lastrowid
+                lines = []
+                for qty, uom, desc, code, note in line_items:
+                    if str(desc or "").strip():
+                        c.execute(
+                            "INSERT INTO items (request_id, qty, uom, description, code, notes) VALUES (?,?,?,?,?,?)",
+                            (rid, qty, uom, desc, code, note),
+                        )
+                        lines.append(f"- {qty} {uom} {desc} ({code or 'no code'})")
+                if uploaded_files:
+                    for f in uploaded_files:
+                        fid = str(uuid.uuid4())
+                        fname = f"{fid}{os.path.splitext(f.name)[1]}"
+                        with open(os.path.join(UPLOAD_DIR, fname), "wb") as out:
+                            out.write(f.getbuffer())
+                        c.execute(
+                            "INSERT INTO documents (request_id, filename, original_name, doc_type, uploaded_at) VALUES (?,?,?,?,?)",
+                            (rid, fname, f.name, "Attachment", now),
+                        )
+                c.execute(
+                    "INSERT INTO status_history (request_id, status, notes, changed_by, changed_at) VALUES (?,?,?,?,?)",
+                    (rid, "Submitted", "New request", requested_by, now),
+                )
+                conn.commit()
+                conn.close()
+
+                subject = f"New material request {req_no}"
+                body = (
+                    f"A new material request was submitted.\n\n"
+                    f"Requisition: {req_no}\n"
+                    f"Project: {project_name or '-'}\n"
+                    f"Project number: {project_number or '-'}\n"
+                    f"Segment: {segment or '-'}\n"
+                    f"Requested by: {requested_by} ({requester_email})\n"
+                    f"Delivery: {delivery_address or '-'}\n"
+                    f"Date required: {date_required}\n"
+                    f"Notes: {notes or '-'}\n\n"
+                    f"Items:\n" + ("\n".join(lines) if lines else "- None listed")
+                )
+                purchase_to = st.session_state.smtp.get("purchase_email") or PURCHASE_EMAIL
+                sent, err = send_notification(purchase_to, subject, body, st.session_state.smtp)
+                msg = f"Request {req_no} submitted."
+                if sent:
+                    msg += f" Email sent to {purchase_to}."
+                else:
+                    msg += f" Purchase email was not sent: {err}"
+                st.session_state.last_result = msg
+                status_box.success(msg)
+            except Exception as e:
+                msg = f"Could not save the request: {e}"
+                st.session_state.last_result = msg
+                status_box.error(msg)
 
 else:
     st.header("Track orders")
@@ -365,7 +426,7 @@ else:
                 "SELECT * FROM requests WHERE requisition_no = ?", conn, params=(sel,)
             ).iloc[0]
             items = pd.read_sql_query(
-                "SELECT qty, description, code, notes FROM items WHERE request_id = ?",
+                "SELECT qty, uom, description, code, notes FROM items WHERE request_id = ?",
                 conn, params=(int(req["id"]),),
             )
             docs = pd.read_sql_query(
@@ -424,7 +485,7 @@ else:
                     f"Notes: {update_note or 'None'}\n"
                     f"Updated by: {changed_by}\n"
                 )
-                sent = send_notification(req["requester_email"], subject, body, st.session_state.smtp)
+                sent, _ = send_notification(req["requester_email"], subject, body, st.session_state.smtp)
                 st.success("Status saved." + (" Email sent." if sent else " Email is not set up."))
                 st.rerun()
             with st.expander("Status history"):
